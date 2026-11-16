@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Detail Akun SSH - [USERNAME]</title>
+<style>
+    body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    .card { background: #1e293b; max-width: 500px; width: 100%; padding: 25px; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); border-top: 4px solid #06b6d4; }
+    .header { text-align: center; margin-bottom: 20px; }
+    .header h2 { margin: 0; color: #06b6d4; font-size: 24px; letter-spacing: 1px; }
+    .header p { color: #94a3b8; font-size: 14px; margin-top: 5px; }
+    .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; background: #334155; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+    .info-item p { margin: 0; font-size: 12px; color: #cbd5e1; }
+    .info-item h4 { margin: 5px 0 0 0; font-size: 16px; color: #facc15; word-break: break-all; }
+    .section-title { font-size: 14px; color: #cbd5e1; margin-bottom: 8px; border-bottom: 1px solid #475569; padding-bottom: 5px; }
+    .payload-box { background: #000; padding: 12px 15px; border-radius: 8px; margin-bottom: 15px; position: relative; display: flex; justify-content: space-between; align-items: center; }
+    .payload-text { font-family: monospace; color: #10b981; font-size: 13px; word-break: break-all; width: 80%; }
+    .copy-btn { background: #06b6d4; color: #fff; border: none; padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+    .copy-btn:hover { background: #0891b2; }
+    .footer { text-align: center; margin-top: 25px; font-size: 13px; color: #64748b; }
+</style>
+</head>
+<body>
+
+<div class="card">
+    <div class="header">
+        <h2>✨ PREMIUM SSH ✨</h2>
+        <p>Informasi Detail Akun Tunneling Anda</p>
+    </div>
+
+    <div class="info-grid">
+        <div class="info-item">
+            <p>Username</p>
+            <h4>[USERNAME]</h4>
+        </div>
+        <div class="info-item">
+            <p>Password</p>
+            <h4>[PASSWORD]</h4>
+        </div>
+        <div class="info-item">
+            <p>IP VPS</p>
+            <h4>[IP_VPS]</h4>
+        </div>
+        <div class="info-item">
+            <p>Host / Domain</p>
+            <h4>[DOMAIN]</h4>
+        </div>
+        <div class="info-item">
+            <p>ISP & Lokasi</p>
+            <h4>[ISP_CITY]</h4>
+        </div>
+        <div class="info-item">
+            <p>Expired & Limit</p>
+            <h4>[EXPIRED_INFO]</h4>
+        </div>
+    </div>
+
+    <div class="section-title">SSL / TLS (Port 443)</div>
+    <div class="payload-box">
+        <div class="payload-text" id="ssl">[SSL_PAYLOAD]</div>
+        <button class="copy-btn" onclick="copyText('ssl', this)">Copy</button>
+    </div>
+
+    <div class="section-title">Websocket (Port 80)</div>
+    <div class="payload-box">
+        <div class="payload-text" id="ws">[WS_PAYLOAD]</div>
+        <button class="copy-btn" onclick="copyText('ws', this)">Copy</button>
+    </div>
+
+    <div class="section-title">UDP Custom (Port 1-65535)</div>
+    <div class="payload-box">
+        <div class="payload-text" id="udp">[UDP_PAYLOAD]</div>
+        <button class="copy-btn" onclick="copyText('udp', this)">Copy</button>
+    </div>
+
+    <div class="footer">
+        System by <b>AcilTunneling</b> | @AcilOffcial
+    </div>
+</div>
+
+<script>
+    function copyText(elementId, btn) {
+        var text = document.getElementById(elementId).innerText;
+        var tempInput = document.createElement("input");
+        tempInput.value = text;
+        document.body.appendChild(tempInput);
+        tempInput.select();
+        document.execCommand("copy");
+        document.body.removeChild(tempInput);
+        
+        var originalText = btn.innerText;
+        btn.innerText = "Copied!";
+        btn.style.background = "#10b981";
+        setTimeout(function() {
+            btn.innerText = originalText;
+            btn.style.background = "#06b6d4";
+        }, 1500);
+    }
+</script>
+
+</body>
+</html>
