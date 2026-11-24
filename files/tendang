@@ -1,0 +1,252 @@
+#!/bin/bash
+
+LOCK_FILE="/var/lib/kyt/lockipssh.txt"
+mkdir -p /var/lib/kyt /etc/kyt/limit/ssh/ip
+touch "$LOCK_FILE"
+chmod 600 "$LOCK_FILE"
+
+# Fungsi terpusat untuk mengirim notifikasi Telegram
+send_telegram() {
+    local USER_NAME="$1"
+    local LOGIN_CNT="$2"
+    local LIMIT_CNT="$3"
+    local FOOTER_MSG="$4"
+
+    local CHATID KEY DOMAIN_PART FLAG TIMEOUT URL TEXT
+    CHATID=$(grep -E "^#bot# " "/etc/bot/.bot.db" 2>/dev/null | cut -d ' ' -f 3)
+    KEY=$(grep -E "^#bot# " "/etc/bot/.bot.db" 2>/dev/null | cut -d ' ' -f 2)
+
+    [ -z "$CHATID" ] || [ -z "$KEY" ] && return 0
+
+    if [ -r "/etc/xray/domain" ]; then
+        DOMAIN_PART=$(cut -d '.' -f1 /etc/xray/domain | tr '[:lower:]' '[:upper:]')
+    else
+        DOMAIN_PART="VPS"
+    fi
+
+    if [[ "$DOMAIN_PART" == *"SG"* ]]; then
+        FLAG="🇸🇬"
+    else
+        FLAG="🇮🇩"
+    fi
+
+    TIMEOUT="10"
+    URL="https://api.telegram.org/bot${KEY}/sendMessage"
+    TEXT="──────────────────────
+🚫 Notifikasi Multilogin SSHWS
+──────────────────────
+<blockquote><code>SERVER ${DOMAIN_PART} ${FLAG}</code></blockquote>
+<code>User  :</code> <code>${USER_NAME}</code>
+<code>Login :</code> <code>${LOGIN_CNT} IP</code>
+<code>Limit :</code> <code>${LIMIT_CNT} IP</code>
+──────────────────────
+${FOOTER_MSG}
+──────────────────────"
+
+    curl -s --max-time "$TIMEOUT" \
+        -d "chat_id=${CHATID}" \
+        -d "disable_web_page_preview=1" \
+        -d "parse_mode=HTML" \
+        --data-urlencode "text=${TEXT}" \
+        "$URL" >/dev/null 2>&1
+}
+
+send_log() {
+    send_telegram "$1" "$2" "$3" "Notif ${4}X Multilogin: 3X Autolock"
+}
+
+send_logx() {
+    send_telegram "$1" "$2" "$3" "Notif 3X Multilogin: Lock 15 Menit"
+}
+
+send_logxx() {
+    send_telegram "$1" "$2" "$3" "Notif 4X Multilogin: Locked!"
+}
+
+# Parsing username & IP secara dinamis (aman untuk timestamp lama maupun ISO-8601)
+parse_user_ip() {
+    awk '{
+        found=0; user=""; ip="";
+        for (i=1; i<=NF; i++) {
+            if ($i == "succeeded" || $i == "Accepted") found=1;
+            if (found && $i == "for" && user == "") {
+                user = $(i+1);
+                gsub(/\047/, "", user);
+            } else if (found && $i == "from" && user != "" && ip == "") {
+                ip = $(i+1);
+            }
+        }
+        if (user != "") print user, ip;
+    }'
+}
+
+# Hapus catatan pelanggaran persis untuk satu username
+clear_lock_record() {
+    local target="$1"
+    grep -Fxv "$target" "$LOCK_FILE" > "${LOCK_FILE}.tmp" || true
+    mv "${LOCK_FILE}.tmp" "$LOCK_FILE"
+    chmod 600 "$LOCK_FILE"
+}
+
+# Tendang hanya sesi aktif milik user pelanggar (Dropbear & OpenSSH)
+kick_user_sessions() {
+    local target="$1"
+    local pid_list="$2"
+    [ "$target" = "root" ] && return 0
+
+    for kpid in $pid_list; do
+        if [[ "$kpid" =~ ^[0-9]+$ ]]; then
+            kill -9 "$kpid" 2>/dev/null
+        fi
+    done
+    pkill -9 -u "$target" 2>/dev/null
+}
+
+while true; do
+    echo "Memulai proses monitoring SSHWS."
+
+    # Reset seluruh array di setiap siklus agar tidak menumpuk
+    unset valid_users login_session user_count user_pids
+    declare -A valid_users
+    declare -A login_session
+    declare -A user_count
+    declare -A user_pids
+
+    # Ambil daftar user SSH non-sistem (UID >= 1000, bebas dari root & nobody)
+    mapfile -t user_list < <(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd | sort)
+    for u in "${user_list[@]}"; do
+        valid_users["$u"]=1
+        user_count["$u"]=0
+        user_pids["$u"]=""
+    done
+
+    # Gabungkan log auth.log dan journalctl agar Dropbear (-EF) dan OpenSSH terbaca semua
+    AUTH_SUCCESS_LOGS="$({
+        [ -r "/var/log/auth.log.1" ] && cat /var/log/auth.log.1
+        [ -r "/var/log/auth.log" ] && cat /var/log/auth.log
+        [ -r "/var/log/secure" ] && cat /var/log/secure
+        if command -v journalctl >/dev/null 2>&1; then
+            journalctl -t dropbear -t sshd -t sshd-session --since "72 hours ago" --no-pager
+        fi
+    } 2>/dev/null | grep -iE '(dropbear|sshd|sshd-session)\[[0-9]+\]:.*(auth succeeded|Accepted )')"
+
+    # 1. Hitung sesi aktif Dropbear (SSHWS)
+    mapfile -t DB_PIDS < <(ps -eo pid=,ppid=,comm= | awk 'tolower($3) == "dropbear" && $2 != 1 {print $1}')
+    for PID in "${DB_PIDS[@]}"; do
+        MATCH="$(printf '%s\n' "$AUTH_SUCCESS_LOGS" | grep -E "dropbear\[${PID}\]:" | tail -n 1)"
+        if [ -n "$MATCH" ]; then
+            read -r USER IP <<< "$(printf '%s\n' "$MATCH" | parse_user_ip)"
+            if [ -n "$USER" ] && [ "${valid_users[$USER]}" = "1" ]; then
+                user_pids["$USER"]+="$PID "
+                IP_KEY="${IP:-pid-$PID}"
+                if [ -z "${login_session["$USER|$IP_KEY"]}" ]; then
+                    user_count["$USER"]=$(( ${user_count[$USER]:-0} + 1 ))
+                    login_session["$USER|$IP_KEY"]=1
+                fi
+            fi
+        fi
+    done
+
+    # 2. Hitung sesi aktif OpenSSH (SSL / Direct)
+    mapfile -t SSH_SESSIONS < <(ps -eo pid=,ppid=,comm=,args= | awk '
+    {
+        pid=$1; ppid=$2; comm=tolower($3);
+        cmd="";
+        for (i=4; i<=NF; i++) cmd = cmd (i==4 ? "" : " ") $i;
+        if ((comm == "sshd" || comm == "sshd-session") && ppid == 1) {
+            listener[pid] = 1;
+        }
+        if ((comm == "sshd" || comm == "sshd-session") && cmd ~ /@/) {
+            has_session[ppid] = 1;
+        }
+        pids[NR] = pid; ppids[NR] = ppid; comms[NR] = comm; cmds[NR] = cmd;
+    }
+    END {
+        for (i=1; i<=NR; i++) {
+            if ((comms[i] == "sshd" || comms[i] == "sshd-session") && listener[ppids[i]]) {
+                split(cmds[i], parts, /[[:space:]]+/);
+                u = parts[2];
+                if (u != "" && u !~ /^\[/) {
+                    is_tty = (u ~ /@/) ? 1 : 0;
+                    sub(/@.*/, "", u);
+                    if (u != "root") {
+                        active = (is_tty || has_session[pids[i]]) ? 1 : 0;
+                        print pids[i], u, active;
+                    }
+                }
+            }
+        }
+    }')
+
+    for ENTRY in "${SSH_SESSIONS[@]}"; do
+        read -r PID USER ACTIVE <<< "$ENTRY"
+        if [ -n "$USER" ] && [ "${valid_users[$USER]}" = "1" ]; then
+            MATCH="$(printf '%s\n' "$AUTH_SUCCESS_LOGS" | grep -E "(sshd|sshd-session)\[${PID}\]:" | tail -n 1)"
+            if [ -n "$MATCH" ] || [ "$ACTIVE" = "1" ]; then
+                IP=""
+                if [ -n "$MATCH" ]; then
+                    read -r _ IP <<< "$(printf '%s\n' "$MATCH" | parse_user_ip)"
+                fi
+                user_pids["$USER"]+="$PID "
+                IP_KEY="${IP:-pid-$PID}"
+                if [ -z "${login_session["$USER|$IP_KEY"]}" ]; then
+                    user_count["$USER"]=$(( ${user_count[$USER]:-0} + 1 ))
+                    login_session["$USER|$IP_KEY"]=1
+                fi
+            fi
+        fi
+    done
+
+    # 3. Evaluasi batas login tiap user
+    for user in "${user_list[@]}"; do
+        limit_file="/etc/kyt/limit/ssh/ip/$user"
+        iplimit=$(tr -d '[:space:]' < "$limit_file" 2>/dev/null)
+
+        if ! [[ "$iplimit" =~ ^[0-9]+$ ]] || [ "$iplimit" -eq 0 ]; then
+            iplimit=2
+            echo "2" > "$limit_file"
+        fi
+
+        # Toleransi 2x limit bawaan script (ubah jadi MAX=$iplimit jika ingin ketatnya 1:1)
+        MAX=$iplimit
+
+        STATUS=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+        if [ "$STATUS" = "L" ] || [ "$STATUS" = "LK" ]; then
+            echo "User $user terkunci, melewati proses."
+            continue
+        fi
+
+        LOGIN_NOW="${user_count[$user]:-0}"
+        echo "Memproses User : [Login: ${LOGIN_NOW}, Limit: ${iplimit}] ${user}"
+
+        if [ "$LOGIN_NOW" -gt "$MAX" ]; then
+            echo "$user" >> "$LOCK_FILE"
+            VIOLATIONS=$(grep -Fx -c "$user" "$LOCK_FILE")
+
+            if [ "$VIOLATIONS" -ge 4 ]; then
+                echo "Lock $user 4X Multilogin."
+                passwd -l "$user" >/dev/null 2>&1
+                kick_user_sessions "$user" "${user_pids[$user]}"
+                clear_lock_record "$user"
+                send_logxx "$user" "$LOGIN_NOW" "$iplimit"
+                echo "Notifikasi terkirim ke telegram."
+
+            elif [ "$VIOLATIONS" -eq 3 ]; then
+                echo "User $user melebihi batas login, lock & unlock 15 menit."
+                passwd -l "$user" >/dev/null 2>&1
+                kick_user_sessions "$user" "${user_pids[$user]}"
+                echo "unlocklimitip ssh $user" | at now + 15 minutes >/dev/null 2>&1
+                send_logx "$user" "$LOGIN_NOW" "$iplimit"
+                echo "Notifikasi terkirim ke telegram."
+
+            else
+                echo "User $user melebihi batas login (${VIOLATIONS}X), kick sesi & kirim notif!"
+                kick_user_sessions "$user" "${user_pids[$user]}"
+                send_log "$user" "$LOGIN_NOW" "$iplimit" "$VIOLATIONS"
+            fi
+        fi
+    done
+
+    echo "Siklus monitoring selesai. sleep 120 detik!"
+    sleep 120
+done
