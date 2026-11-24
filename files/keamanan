@@ -1,0 +1,148 @@
+#!/bin/bash
+
+THRESHOLD_RAM=95
+THRESHOLD_DISK=95
+CHECK_INTERVAL=60
+NOTIF_COOLDOWN=900
+
+last_disk_notif=0
+last_xray_notif=0
+xray_was_down=0
+
+send_log() {
+    local RAM="$1"
+    local DISK="$2"
+    local MSG="$3"
+    local CHATID KEY DOMAIN TIMEOUT URL TEXT
+
+    CHATID=$(grep -E "^#bot# " "/etc/bot/.bot.db" 2>/dev/null | cut -d ' ' -f 3)
+    KEY=$(grep -E "^#bot# " "/etc/bot/.bot.db" 2>/dev/null | cut -d ' ' -f 2)
+    [ -z "$CHATID" ] || [ -z "$KEY" ] && return 0
+
+    DOMAIN=$(tr -d '[:space:]' < /etc/xray/domain 2>/dev/null)
+    [ -z "$DOMAIN" ] && DOMAIN=$(hostname)
+
+    TIMEOUT="10"
+    URL="https://api.telegram.org/bot${KEY}/sendMessage"
+    TEXT="───────────────────────
+🚫 Notifikasi Warning Server
+───────────────────────
+<code>RAM  :</code> <code>${RAM}%</code>
+<code>Disk :</code> <code>${DISK}%</code>
+<code>Host :</code> <code>${DOMAIN}</code>
+───────────────────────
+${MSG}
+───────────────────────"
+
+    curl -s --max-time "$TIMEOUT" \
+        -d "chat_id=${CHATID}" \
+        -d "disable_web_page_preview=1" \
+        -d "parse_mode=HTML" \
+        --data-urlencode "text=${TEXT}" \
+        "$URL" >/dev/null 2>&1
+}
+
+get_ram_usage() {
+    free -m | awk '/^Mem:/ {
+        if ($2 <= 0) { print 0; exit }
+        if ($7 != "") printf "%.0f", (($2 - $7) / $2) * 100;
+        else printf "%.0f", ($3 / $2) * 100;
+    }'
+}
+
+get_disk_usage() {
+    df -P / | awk 'NR==2 {gsub("%", "", $5); print $5}'
+}
+
+get_uptime_sec() {
+    awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0
+}
+
+cleanup_disk() {
+    # Kosongkan file log besar tanpa menghapus file aktif yang dipakai service
+    find /var/log -type f -name "*.log" -size +10M -exec truncate -s 0 {} + 2>/dev/null
+    rm -f /var/log/*.gz /var/log/*.1 /var/log/*.[0-9] /var/log/*/*.gz /var/log/*/*.1 2>/dev/null
+    journalctl --vacuum-size=50M >/dev/null 2>&1
+    apt-get clean >/dev/null 2>&1
+}
+
+while true; do
+    ram_usage=$(get_ram_usage)
+    disk_usage=$(get_disk_usage)
+    [[ "$ram_usage" =~ ^[0-9]+$ ]] || ram_usage=0
+    [[ "$disk_usage" =~ ^[0-9]+$ ]] || disk_usage=0
+    now=$(date +%s)
+
+    # 1. Cek Penggunaan RAM
+    if (( ram_usage >= THRESHOLD_RAM )); then
+        echo "RAM tinggi (${ram_usage}%), mencoba bersihkan cache..."
+        sync
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        sleep 3
+        ram_usage=$(get_ram_usage)
+        [[ "$ram_usage" =~ ^[0-9]+$ ]] || ram_usage=0
+
+        if (( ram_usage >= THRESHOLD_RAM )); then
+            uptime_sec=$(get_uptime_sec)
+            if (( uptime_sec > 300 )); then
+                echo "RAM masih kritis (${ram_usage}%), mengirim notif & reboot aman."
+                send_log "$ram_usage" "$disk_usage" "Warning: Penggunaan RAM Kritis (${ram_usage}%)! Server akan reboot."
+                cleanup_disk
+                sleep 5
+                reboot
+                exit 0
+            else
+                echo "RAM kritis (${ram_usage}%), reboot ditahan (uptime < 5 menit, cegah boot-loop)."
+            fi
+        fi
+    fi
+
+    # 2. Cek Penggunaan Disk (Bersihkan + Notif, JANGAN reboot agar tidak boot-loop)
+    if (( disk_usage >= THRESHOLD_DISK )); then
+        echo "Disk tinggi (${disk_usage}%), menjalankan pembersihan log & cache..."
+        cleanup_disk
+        disk_usage=$(get_disk_usage)
+        [[ "$disk_usage" =~ ^[0-9]+$ ]] || disk_usage=0
+
+        if (( disk_usage >= THRESHOLD_DISK )) && (( now - last_disk_notif >= NOTIF_COOLDOWN )); then
+            echo "Disk masih tinggi (${disk_usage}%) setelah dibersihkan, kirim notif."
+            send_log "$ram_usage" "$disk_usage" "Warning: Penggunaan Disk Tinggi (${disk_usage}%)! Cek manual via SSH."
+            last_disk_notif=$now
+        fi
+    fi
+
+    # 3. Cek Status Xray (Verifikasi ulang 5 detik agar tidak false alarm saat restart limit)
+    if ! systemctl is-active --quiet xray; then
+        sleep 5
+        if ! systemctl is-active --quiet xray; then
+            echo "Xray terdeteksi offline, mencoba auto-restart..."
+            systemctl restart xray >/dev/null 2>&1
+            sleep 5
+
+            if systemctl is-active --quiet xray; then
+                echo "Xray berhasil dipulihkan otomatis."
+                if (( now - last_xray_notif >= NOTIF_COOLDOWN )); then
+                    send_log "$ram_usage" "$disk_usage" "Info: Xray sempat offline, berhasil di-restart otomatis."
+                    last_xray_notif=$now
+                fi
+                xray_was_down=0
+            else
+                echo "Xray masih offline setelah restart!"
+                xray_was_down=1
+                if (( now - last_xray_notif >= NOTIF_COOLDOWN )); then
+                    send_log "$ram_usage" "$disk_usage" "CRITICAL: Xray Offline & gagal restart! Cek config.json via SSH."
+                    last_xray_notif=$now
+                fi
+            fi
+        fi
+    else
+        if [ "$xray_was_down" -eq 1 ]; then
+            send_log "$ram_usage" "$disk_usage" "✅ Recovery: Layanan Xray sudah online kembali."
+            xray_was_down=0
+            last_xray_notif=0
+        fi
+        echo "SYSTEM OK: RAM=${ram_usage}%, DISK=${disk_usage}%, XRAY=ONLINE"
+    fi
+
+    sleep "$CHECK_INTERVAL"
+done
