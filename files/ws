@@ -1,0 +1,86 @@
+# AcilshopENC:MAU NGAPAIN OM
+# ACIL_V2:8CUB5t7ZUraBkIKYj76o4HA8HqkhYdh9brJTbLhxca1NJYiGEzNrjzJlNTOqDEZhnPGuc1Vj1_TaoYx4sg56qW1rMifLGqEbifFGnW8vsQR6vC-60VH8NFt3zBtGEp1tbbRh5LN4qkg4vTmnSAS0WznFGyM63T9Ylcb_msY5F9LD0if_C71P0QQCWHC-htDeMejRUZnqC_jWVUbt4SVMPHaCKfPIYYJLYOge6gnqKN4Mtc2kfTao2teOOYr2NGKlE2b_Hpe472c60rPC0YnebWSHubtT5tr80Ym_XDE2M9sb-5hhQfHybsRm1cbgBxODs4NeZggrEIx5mdlMY628Jkb4mQAGdOYvHu88XT_t5tpGUtQH-SIiwmFqQ6VM-sCSfctXoOlH16Xiu3xG-LM-bHdBNV3fMkfg-lrNayYYSlpUlU92EKXX6PdHFi6HA897LY_Oi-aL7_qbjTaoJ8GITvw
+import base64, gzip, hashlib
+_ra = "goRwPKMk7AZqJOFU" + "n8DmuvHdc/C0r5tz" + "h1V4+bE3WslLpGSY" + "NaxXIfi96yejTB2Q"
+_rt = 25
+_a = _ra[64 - _rt:] + _ra[:64 - _rt]
+_s = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_kb = [133,105,141,172,157,202,37,52,209,46,43,217,101,162,186,153,169,231,12,21,72,17,16,105,66,13,0,144,48,217,113,246]
+_K = [(_kb[i] - ((i * 54 + 148) % 256)) % 256 for i in range(len(_kb))]
+_S = list(range(256))
+_j = 0
+for _i in range(256):
+    _j = (_j + _S[_i] + _K[_i % len(_K)]) % 256
+    _S[_i], _S[_j] = _S[_j], _S[_i]
+_i = _j = 0
+for _ in range(256):
+    _i = (_i + 1) % 256
+    _j = (_j + _S[_i]) % 256
+    _S[_i], _S[_j] = _S[_j], _S[_i]
+_p = "AcilshopENC:MAU NGAPAIN OM:"
+_raw = """
+AcilshopENC:MAU NGAPAIN OM:1139:n5JvLeXaJjRexzhna7a/EE90F5+0mpyiJsyQvJU+vMU2i/tlptERp2G6zxXWd+4qDUUA
+AcilshopENC:MAU NGAPAIN OM:1205:gHwz8GD5AZQvO6sQq2hkWYGrxeAVjYYtyRNbhv2Sgh3jMRDAKSye/WRe06==
+AcilshopENC:MAU NGAPAIN OM:1128:qKu5ysVueRpqolyMR//2aMtmk8loEGin07HKgspDWFbNTZskQBQKhULDgVms2TZyfdck
+AcilshopENC:MAU NGAPAIN OM:974:1Bru0PX0zxZ0lKxAb80VNha6Eu7vYdfrAp+OXQe2mnM1CmgpxPiOASb5f+Ss9lcZ3eG6
+AcilshopENC:MAU NGAPAIN OM:897:/YKmAdLdAgxVxQau2s8D7Rf3RsKjeEOl08P9cEf3A2S3lmOoMWnNGfl0nAXpiH8gEh53
+AcilshopENC:MAU NGAPAIN OM:952:fUfwDSdhkxwerZ4nubpR8IaB7EU01KhlhOumPoBLz3TUkOXuQRa5L6npjUczR4eMYkbB
+AcilshopENC:MAU NGAPAIN OM:875:ef1FVz+r6UpuUd2hPmJnSZ4F63juVX2Cd3rfoWO/1xH6PVK338DnF2XyIY+J0QLSWNk3
+AcilshopENC:MAU NGAPAIN OM:919:QE5gNkpCnDx0sT8j4+j6r8wUGUIQsTlG6nZnyJor/b18yb73V2BRrYdRgTbrd0UXC1aG
+AcilshopENC:MAU NGAPAIN OM:1029:ODrxjngDC36LwtDmyz7/GIKhKkG9655a2hdwtLZZo3qjLYxJx9oxISeoYzrRWKtrqJcA
+AcilshopENC:MAU NGAPAIN OM:1150:Ai45Yv2nwsP+U7AknTqQxZlXqJrznrFE3aTsliu4dEvVQNlGSf4HkiYL4+ADNY5mgAMA
+AcilshopENC:MAU NGAPAIN OM:1084:w/ihsBiFFFwtraoy2JtB0EmIyJ1IOzvEoXgp7B9M6r+8WmccnkoIK8AErxQ/sklY949B
+AcilshopENC:MAU NGAPAIN OM:930:9nnsga65tJ9mxqooKirejoLERCQH1jHWBEyuZaVWxunDR8L49Zok1ivAYi17v1IApTka
+AcilshopENC:MAU NGAPAIN OM:1007:1NnHIEH3LzrnU4Lco2YEAc9+MwWU0zlUVQr7lH6vV26/Vklj9QAfQ4PzHyxcipZbw46O
+AcilshopENC:MAU NGAPAIN OM:1062:XQo16EiO4matBB+82sq+IdAmZm1I0CmTeiCpjNf7Z86D/ve7Xsf7cQuShSijw9AOk5ZX
+AcilshopENC:MAU NGAPAIN OM:1117:B/ZWzjSGZzGDxIQCVtztm3W01NvQBNAmK2wshusCoxCv8EMkOzpr1yum4lXrNGdSHsDI
+AcilshopENC:MAU NGAPAIN OM:1194:40u4DZMzn+xEvVCZ/d8odTwggkgsoHrz9CMBa1qMillCQKK6NRARSDm4aIiuksg71Mmi
+AcilshopENC:MAU NGAPAIN OM:831:TnMEWjSdoj6EMTl5m2RDviFb3ppAFWYb+pajN8R4ACOzhKGIzRpGrbczkWfS2DxHjH/l
+AcilshopENC:MAU NGAPAIN OM:1018:GxTrQRv73ysUWFc+vKcsKvR+T3eT8Ks08ygBCZYdVMH9aGwphDxG5Qo7er4CIffLss1/
+AcilshopENC:MAU NGAPAIN OM:1172:iqkk8ddFRV5f6Y7/uOiVCFzzqSs92FtEj9Vr7WAGuXYAGTLnRtG3WlXSdTUGmvpchs0I
+AcilshopENC:MAU NGAPAIN OM:820:nvIbqplAMpxA3FrbfLdISaRPY46n9wsq/C9JlvvPiB8BdMTkz4Wyzi/+TiFG7EbxnXvH
+AcilshopENC:MAU NGAPAIN OM:963:93SXynOecrP3NM9CPpxYp78kZvSFo6O1gw3Ge+dpyc9DDD8ArLeVjxINI3ZuQ93Dal0r
+AcilshopENC:MAU NGAPAIN OM:985:u7K/r3Ly9BQOWuyVNnOzm4MukmeNyN9G14bD8y/ibWQ9i6RflNXDlyW1sdz2bCOdShd5
+AcilshopENC:MAU NGAPAIN OM:1106:TPkEMyTjiBaNLkXcARh6s97LnbMg6mWW7av94W5GagFYS/hSZc4zAefLaaSvGV3AqirR
+AcilshopENC:MAU NGAPAIN OM:1095:tnF1bHXIWx41MY3EWXxOwbv91MZ35jXVSB5Q42np3QdO2EEkhWVCLKyw/61xX1/I37dJ
+AcilshopENC:MAU NGAPAIN OM:1051:5DRkeqPnKN1piCcvpLSz3d1joz+SL7/zpAsgckhioMSA0Gi0OXPX0XSmyQyfYgC702sE
+AcilshopENC:MAU NGAPAIN OM:864:LtnX03QWjwVMNQ1xA6Lp0356+zHilXRuvfaRNyc8/WpUTav3ERT3r73z6GMg38bFegvd
+AcilshopENC:MAU NGAPAIN OM:941:qzof2dBQ6ecsRtiL/iAe2dlRyt0o1kbpxQ/dzXOtZUc6qyJ/ZhHgVZGeh6XzuH1p7X2y
+AcilshopENC:MAU NGAPAIN OM:1161:WTPJ7k9Kymtj7MK8jQB057MRGyBtsityFptvTQCfub0WO3tRcROCzJKCCEZ7Th60FpLw
+AcilshopENC:MAU NGAPAIN OM:996:SPvWrJx7qWzTJ3sxx65u4ut5EVIVvlT4bZwxZ5LLoMI9sNLHwhczW2LKm+4Gn8v8WXYd
+AcilshopENC:MAU NGAPAIN OM:886:KQywHzqR4cMwghqaawSshLjkuV3buHkMPV/HuI8KKh8bNoj2/OOfGIX6BkBcrRj9vaU2
+AcilshopENC:MAU NGAPAIN OM:842:Pl/SRoGE7AesiE637QVREAS9zCFwkwlib3RVJKjTKEWwv8HqHIMcV6xBoJvD7UZ6fKhR
+AcilshopENC:MAU NGAPAIN OM:1040:mHPL5LeEaFC5PNugykpFmQmjJcZdt8W0+j2hdZS2FBJI/nXstWU8gIPBJcz5JVs0K76Q
+AcilshopENC:MAU NGAPAIN OM:1183:E4OjTDtXolO8xUIeGLeirxHB8tb2Z1lUU5KEYoYsdL6jiM93xEka4mb3sTz7jgQqwfkQ
+AcilshopENC:MAU NGAPAIN OM:853:0QE/uxV6EjyEVTB8GL0ODT1aDWmX9ESCMRvgyCt9shOYi7m63qqcjUcuugyj/s34yneM
+AcilshopENC:MAU NGAPAIN OM:908:bQr7p1tMTKAnY48Ni8XgIWVbBDz5h3OTkWeASQzAG4tPSHhCrSWWlGrR8w017PmphcNd
+AcilshopENC:MAU NGAPAIN OM:1073:2JKleKiXZPqJvKa1c/pmQX8W6gHT1ak1ogOtinf+NSw/wdFJYkB8OC/vPZ3deR3bzsfo
+"""
+_L = {}
+for _ln in _raw.splitlines():
+    _ln = _ln.rstrip("\r")
+    if _ln.startswith(_p):
+        _r = _ln[len(_p):]
+        _c = _r.find(":")
+        if _c > 0:
+            _q = (int(_r[:_c]) - 809) // 11
+            _L[_q] = "".join(_r[_c + 1:].split())
+if len(_L) != 36:
+    raise RuntimeError("Payload corrupted")
+_out = []
+for _x in range(1, 36 + 1):
+    for _ch in _L[_x]:
+        _idx = _a.find(_ch)
+        if _idx >= 0:
+            _i = (_i + 1) % 256
+            _j = (_j + _S[_i]) % 256
+            _S[_i], _S[_j] = _S[_j], _S[_i]
+            _kv = _S[(_S[_i] + _S[_j]) % 256]
+            _out.append(_s[(_idx - (_kv % 64)) % 64])
+        else:
+            _out.append(_ch)
+_b = base64.b64decode("".join(_out))
+_src = gzip.decompress(_b)
+if hashlib.sha256(_src).hexdigest() != "2827262534a2fe28f486680db1dba60d05d839cd82aa02cacb97817f5a2c80fa":
+    raise RuntimeError("Integrity check failed")
+exec(compile(_src.decode("utf-8"), "<protected>", "exec"))
