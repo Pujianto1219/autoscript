@@ -1,0 +1,35 @@
+#!/bin/bash
+if [ -z "$BASH_VERSION" ]; then exec bash "$0" "$@"; fi
+set +x; trap "" DEBUG
+# AcilshopENC:MAU NGAPAIN OM
+# OBF_PWD_SH_V1 | Original: update.sh | Salt: 0043ca3f1cd7f990 | Check: ebbc9fff3fcf81af
+_kaa5b1c="N4u5zbAYXjyBlOp9"
+_k19a136="oTVL8+vPJrhSsQcZ"
+_k0506d8="EFnmtqxi0WaKM2f3"
+_ke3ffd5="weGU/CDg1H7kRdI6"
+_p4a1f2f=$(cat << '__OBF_EOF__'
+AcilshopENC:MAU NGAPAIN OM:Y1MXNNNNNNNuNd+vSv6SOF5IUqdeqSgJSa5XsErMicMpaclDwrBJM4lzvDJz2YVpvzf8VqBjf2LN
+AcilshopENC:MAU NGAPAIN OM:9fkmNMo28y46BKdttpP0UPhGSFIDAJXFYWIkHkimt+LWnLbng4FT7rNVgYg1ZZ8UIgmg1cJF1IBd
+AcilshopENC:MAU NGAPAIN OM:HM3evs2m3zMMtcSrWk3rYdAUlO1fFK99T8f4hjJOQZfPR+x3x/Qs+nTIl76UsWeCqmeTAmOps5CI
+AcilshopENC:MAU NGAPAIN OM:dxt+cGSOPBTRItfj6G9OsPbvqvybcGXkjDGWUM3Wbe/Z/CUNb1foeRwIKMsPt4imntXdxAd4R7ye
+AcilshopENC:MAU NGAPAIN OM:9IQRtDk9baANUNHP1FIEvzx7qnyGz9jmHIuEcdaa6bUZgm7KOkcg3oKWQgJP4K9HU9oaHYT36knL
+AcilshopENC:MAU NGAPAIN OM:xBh6RVKtHc3U3skpSac6lYdQSGHxm2Kg/SwyXcpoi1I0aOSExENN2NdgUIK5qqJD2vTMTfOA9ykp
+AcilshopENC:MAU NGAPAIN OM:679ZDTi0upvdkxYYA5l9Ft9JDN5FELHpKox7Z4CYiMXBwRrBE1cfu1/PADJ4JL7N8YH0pJPJ2VXh
+AcilshopENC:MAU NGAPAIN OM:OfrDbJoyBYSjHYGXqfp5UFA/2jNdb7qzpy+lwJb9SsJ3XuDF5niGBlkdGxzfEFXFOMYDzCqmP/uC
+AcilshopENC:MAU NGAPAIN OM:GaNbdVJwcNkx2/CExHfCvE7DvtS5yDtHnYoTN7F3xLXeDUkYBG2kr40jW4pVrRkq9/GjJdXlr+GI
+AcilshopENC:MAU NGAPAIN OM:l5LUb2MCGZWs6trjtdTv78MdoSd6Sgmo6oAcWbOhrKxHBUwGj8VEOjpp2xwwFpRKc9Rc4yWosXnL
+AcilshopENC:MAU NGAPAIN OM:nA0xe3At1Vz9l7dS3kyNUbzqpzTp3TbCjWL5De5bpC5lo7x0bR5gq7CGChJyJZlKvoO7oo+sPhNu
+AcilshopENC:MAU NGAPAIN OM:evw7EoqGuFhCYXLPLpDb0kn9X05Ib3ofgYp4HnE+GpRloduKKofxiYN8VFVvUe+G2vPHi2zBgU5y
+AcilshopENC:MAU NGAPAIN OM:qvRDUAsA5r83BszurPn8RSi0TYqcqTJiwMSUgWzWHg5J4p8ELHr/6dvE4oyW5SaNlTOViSflXUe9
+AcilshopENC:MAU NGAPAIN OM:Z4j0Yz/KWGEOvngoVfqYm6r/xVAfhAsnqhNLRjP38s8t3AzLxfWGaAofXBQRADYty7mfvlG+mFd/
+AcilshopENC:MAU NGAPAIN OM:m2aCPyGXjgvlCgiQRJAfeXyo+dTCTdVhbNT1+5XYTnmuENX+tEPw/g19T0eyx0MoREnfI7iKp3Xe
+AcilshopENC:MAU NGAPAIN OM:X1Ph7PhDd+rvGiXRg1SOPUjN1Dtp1+CAIU1k58J0FcY7bi8OAVCb+tjvGh929GPzsWzytfUORi+R
+AcilshopENC:MAU NGAPAIN OM:Y8g3Si6kbH6Gd+bkax+qjSZQQjYKVvdgHkE5pGZYg8Ak3dRkF3/m79vkksHEtOwgeVm6GcTGu3fQ
+AcilshopENC:MAU NGAPAIN OM:gcqjlO6rE6ixFwAyVDrFIPKI5L5+tFMQy2zWvuAt49g0M4XyrXGOQmrc8QsCpy0esevyf9d2ba4w
+AcilshopENC:MAU NGAPAIN OM:wwiqTB7LumCBfVNvUEqv5C4XjaOmhhiSVoiDh44yJbwa7K00oyjuqU0E/8+jv8onZXxVebQvpldx
+AcilshopENC:MAU NGAPAIN OM:VUaEqcMhOOyXHYIwO9brGsAlUq+QE47NCFl0jre4F/cbYsye5GImX7SB0HMtCzn/wZ1zQksn34wp
+AcilshopENC:MAU NGAPAIN OM:NNN=
+__OBF_EOF__
+)
+_r03ca1b=$(printf '%s\n' "$_p4a1f2f" | sed 's/^AcilshopENC:MAU NGAPAIN OM://' | tr -d '\n\r ' | tr "${_kaa5b1c}${_k19a136}${_k0506d8}${_ke3ffd5}" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+source <(printf '%s' "$_r03ca1b" | base64 -d | gunzip)
