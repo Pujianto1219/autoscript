@@ -1,0 +1,209 @@
+#!/bin/bash
+
+QUOTA_DIR="/etc/kyt/limit/ssh/quota"
+USAGE_DIR="/etc/limit/ssh"
+INTERVAL=10
+
+mkdir -p "$QUOTA_DIR" "$USAGE_DIR" /var/lib/kyt
+
+declare -A PREV_WCHAR
+declare -A DB_PID_USER
+BOOT_SEED=1
+
+con_bytes() {
+    local val="$1"
+    if ! [[ "$val" =~ ^[0-9]+$ ]]; then echo "0 B"; return; fi
+    if (( val < 1024 )); then
+        echo "${val} B"
+    elif (( val < 1048576 )); then
+        echo "$(( (val + 1023) / 1024 )) KB"
+    elif (( val < 1073741824 )); then
+        echo "$(( (val + 1048575) / 1048576 )) MB"
+    else
+        awk -v v="$val" 'BEGIN { printf "%.2f GB", v / 1073741824 }'
+    fi
+}
+
+parse_dropbear_user() {
+    awk '{
+        found=0; user="";
+        for (i=1; i<=NF; i++) {
+            if ($i == "succeeded") found=1;
+            if (found && $i == "for" && user == "") {
+                user = $(i+1);
+                gsub(/\047/, "", user);
+                print user;
+                exit;
+            }
+        }
+    }'
+}
+
+send_tg_quota() {
+    local user="$1" used_b="$2" limit_b="$3"
+    local chatid key url domain ipvps msg
+    chatid=$(grep -E "^#bot# " "/etc/bot/.bot.db" 2>/dev/null | cut -d ' ' -f 3)
+    key=$(grep -E "^#bot# " "/etc/bot/.bot.db" 2>/dev/null | cut -d ' ' -f 2)
+    [ -z "$chatid" ] || [ -z "$key" ] && return 0
+
+    domain=$(tr -d '\r\n' < /etc/xray/domain 2>/dev/null)
+    ipvps=$(tr -d '[:space:]' < /etc/xray/ipvps 2>/dev/null)
+    url="https://api.telegram.org/bot${key}/sendMessage"
+
+    msg="⚠️ <b>LIMIT QUOTA SSH TERCAPAI</b>
+─────────────────────
+• Domain : <code>${domain}</code>
+• IP VPS : <code>${ipvps}</code>
+• User   : <code>${user}</code>
+• Usage  : $(con_bytes "$used_b")
+• Quota  : $(con_bytes "$limit_b")
+• Status : 🔒 <b>LOCKED</b>
+─────────────────────"
+
+    curl -s --max-time 10 -d "chat_id=${chatid}" -d "parse_mode=html" --data-urlencode "text=${msg}" "$url" >/dev/null 2>&1
+}
+
+lock_and_kick_ssh() {
+    local target="$1" used_b="$2" limit_b="$3"
+    local st p f
+
+    [ -z "$target" ] || [ "$target" = "root" ] && return 0
+    st=$(passwd -S "$target" 2>/dev/null | awk '{print $2}')
+
+    if [[ "$st" != "L" && "$st" != "LK" ]]; then
+        passwd -l "$target" >/dev/null 2>&1
+        for f in /var/lib/kyt/unlock_schedule.txt /var/lib/kyt/unlock_ssh.txt; do
+            if [ -f "$f" ]; then
+                awk -F'|' -v u="$target" '$1 != u' "$f" > "${f}.tmp"
+                mv "${f}.tmp" "$f"
+                chmod 600 "$f"
+            fi
+        done
+        send_tg_quota "$target" "$used_b" "$limit_b"
+    fi
+
+    # Putus sesi Dropbear milik user tersebut
+    for p in "${!DB_PID_USER[@]}"; do
+        if [ "${DB_PID_USER[$p]}" = "$target" ]; then
+            kill -9 "$p" 2>/dev/null
+            unset "DB_PID_USER[$p]"
+            unset "PREV_WCHAR[$p]"
+        fi
+    done
+
+    # Putus sesi OpenSSH milik user tersebut
+    ps -eo pid=,args= | awk -v t="$target" '
+        /^[[:space:]]*[0-9]+[[:space:]]+(sshd|sshd-session):/ {
+            u = $3; sub(/@.*/, "", u);
+            if (u == t) print $1;
+        }
+    ' | xargs -r kill -9 2>/dev/null
+    pkill -9 -u "$target" 2>/dev/null
+}
+
+while true; do
+    declare -A ALIVE_PIDS=()
+    declare -A USER_DELTA=()
+    declare -a UNMAPPED_DB=()
+
+    # 1. Kumpulkan PID aktif OpenSSH (non-root worker) & Dropbear (child)
+    while read -r pid ppid uid proc_user comm; do
+        [ -z "$pid" ] && continue
+        comm_l="${comm,,}"
+
+        if [[ "$comm_l" == "sshd" || "$comm_l" == "sshd-session" ]]; then
+            if [[ "$uid" =~ ^[0-9]+$ ]] && (( uid >= 1000 )) && [ "$proc_user" != "nobody" ]; then
+                ALIVE_PIDS["$pid"]="$proc_user"
+            fi
+        elif [[ "$comm_l" == "dropbear" && "$ppid" != "1" ]]; then
+            if [[ "$uid" =~ ^[0-9]+$ ]] && (( uid >= 1000 )) && [ "$proc_user" != "nobody" ]; then
+                ALIVE_PIDS["$pid"]="$proc_user"
+                DB_PID_USER["$pid"]="$proc_user"
+            elif [ -n "${DB_PID_USER[$pid]}" ]; then
+                ALIVE_PIDS["$pid"]="${DB_PID_USER[$pid]}"
+            else
+                UNMAPPED_DB+=("$pid")
+            fi
+        fi
+    done < <(ps -eo pid=,ppid=,uid=,user:32=,comm= 2>/dev/null)
+
+    # 2. Baca auth log HANYA jika ada PID Dropbear baru yang belum terpetakan
+    if (( ${#UNMAPPED_DB[@]} > 0 )); then
+        auth_logs="$({
+            [ -r "/var/log/auth.log" ] && tail -n 500 /var/log/auth.log
+            [ -r "/var/log/secure" ] && tail -n 500 /var/log/secure
+            if command -v journalctl >/dev/null 2>&1; then
+                journalctl -t dropbear --since "24 hours ago" -n 500 --no-pager
+            fi
+        } 2>/dev/null | grep -iE 'dropbear\[[0-9]+\]:.*auth succeeded')"
+
+        for pid in "${UNMAPPED_DB[@]}"; do
+            match=$(printf '%s\n' "$auth_logs" | grep -E "dropbear\[${pid}\]:" | tail -n 1)
+            if [ -n "$match" ]; then
+                u=$(printf '%s\n' "$match" | parse_dropbear_user)
+                if [ -n "$u" ] && [ "$u" != "root" ]; then
+                    DB_PID_USER["$pid"]="$u"
+                    ALIVE_PIDS["$pid"]="$u"
+                fi
+            fi
+        done
+    fi
+
+    # 3. Hitung delta byte (wchar) dari /proc/$pid/io
+    for pid in "${!ALIVE_PIDS[@]}"; do
+        user="${ALIVE_PIDS[$pid]}"
+        [ -r "/proc/${pid}/io" ] || continue
+        cur=$(awk '/^wchar:/ {print $2; exit}' "/proc/${pid}/io" 2>/dev/null)
+        [[ "$cur" =~ ^[0-9]+$ ]] || continue
+
+        if [ -n "${PREV_WCHAR[$pid]+x}" ]; then
+            prev="${PREV_WCHAR[$pid]}"
+            if (( cur >= prev )); then
+                delta=$(( cur - prev ))
+            else
+                delta="$cur"
+            fi
+        else
+            if [ "$BOOT_SEED" -eq 1 ]; then
+                delta=0
+            else
+                delta="$cur"
+            fi
+        fi
+
+        PREV_WCHAR["$pid"]="$cur"
+        if (( delta > 0 )); then
+            USER_DELTA["$user"]=$(( ${USER_DELTA[$user]:-0} + delta ))
+        fi
+    done
+
+    # 4. Bersihkan cache PID yang sudah mati agar RAM tetap kecil
+    for pid in "${!PREV_WCHAR[@]}"; do
+        if [ -z "${ALIVE_PIDS[$pid]+x}" ]; then
+            unset "PREV_WCHAR[$pid]"
+            unset "DB_PID_USER[$pid]"
+        fi
+    done
+
+    # 5. Akumulasi pemakaian ke /etc/limit/ssh/$user & cek batas kuota
+    for user in "${!USER_DELTA[@]}"; do
+        delta="${USER_DELTA[$user]}"
+        usage_file="${USAGE_DIR}/${user}"
+        quota_file="${QUOTA_DIR}/${user}"
+
+        old_usage=$(tr -d '[:space:]' < "$usage_file" 2>/dev/null)
+        [[ "$old_usage" =~ ^[0-9]+$ ]] || old_usage=0
+        new_usage=$(( old_usage + delta ))
+        printf '%s\n' "$new_usage" > "${usage_file}.tmp" && mv "${usage_file}.tmp" "$usage_file"
+
+        if [ -r "$quota_file" ]; then
+            limit_b=$(tr -d '[:space:]' < "$quota_file" 2>/dev/null)
+            if [[ "$limit_b" =~ ^[0-9]+$ ]] && (( limit_b > 0 && new_usage >= limit_b )); then
+                lock_and_kick_ssh "$user" "$new_usage" "$limit_b"
+            fi
+        fi
+    done
+
+    BOOT_SEED=0
+    sleep "$INTERVAL"
+done
