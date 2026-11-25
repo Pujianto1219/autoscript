@@ -1,0 +1,145 @@
+#!/bin/bash
+
+rm -f "$0"
+
+REPO="https://raw.githubusercontent.com/Pujianto1219/autoscript/main/"
+mkdir -p /etc/xray /etc/kyt/limit/ssh/ip /etc/kyt/limit/ssh/quota /etc/limit/ssh /var/lib/kyt /var/lock
+
+# 1. Unduh Service Limit Quota Xray
+wget -q -O /etc/systemd/system/limitvmess.service "${REPO}files/limitvmess.service"
+wget -q -O /etc/systemd/system/limitvless.service "${REPO}files/limitvless.service"
+wget -q -O /etc/systemd/system/limittrojan.service "${REPO}files/limittrojan.service"
+
+sed -i 's/\r$//' /etc/systemd/system/limitvmess.service /etc/systemd/system/limitvless.service /etc/systemd/system/limittrojan.service
+chmod 644 /etc/systemd/system/limitvmess.service /etc/systemd/system/limitvless.service /etc/systemd/system/limittrojan.service
+
+# 2. Unduh Script Limit Quota Xray & SSH
+wget -q -O /etc/xray/limit.vmess "${REPO}files/vmess"
+wget -q -O /etc/xray/limit.vless "${REPO}files/vless"
+wget -q -O /etc/xray/limit.trojan "${REPO}files/trojan"
+wget -q -O /usr/bin/sshquota "${REPO}files/sshquota"
+
+sed -i 's/\r$//' /etc/xray/limit.vmess /etc/xray/limit.vless /etc/xray/limit.trojan /usr/bin/sshquota
+chmod +x /etc/xray/limit.vmess /etc/xray/limit.vless /etc/xray/limit.trojan /usr/bin/sshquota
+
+# 3. Unduh Script Limit IP & Keamanan
+wget -q -O /usr/bin/vmess "${REPO}files/vmessx"
+wget -q -O /usr/bin/vless "${REPO}files/vlessx"
+wget -q -O /usr/bin/trojan "${REPO}files/trojanx"
+wget -q -O /usr/bin/tendang "${REPO}files/tendang"
+wget -q -O /usr/bin/keamanan "${REPO}files/keamanan"
+
+sed -i 's/\r$//' /usr/bin/vmess /usr/bin/vless /usr/bin/trojan /usr/bin/tendang /usr/bin/keamanan
+chmod +x /usr/bin/vmess /usr/bin/vless /usr/bin/trojan /usr/bin/tendang /usr/bin/keamanan
+
+# 4. Buat Unit Service SystemD dengan Path Universal (/bin/bash) & RestartSec
+cat > /etc/systemd/system/limitssh.service << 'EOF'
+[Unit]
+Description=Limit Quota SSH Service
+After=network-online.target dropbear.service ssh.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root
+ExecStart=/bin/bash /usr/bin/sshquota
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/vmip.service << 'EOF'
+[Unit]
+Description=Limit IP VMess Service
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root
+ExecStart=/bin/bash /usr/bin/vmess
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/vlip.service << 'EOF'
+[Unit]
+Description=Limit IP VLESS Service
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root
+ExecStart=/bin/bash /usr/bin/vless
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/vtrip.service << 'EOF'
+[Unit]
+Description=Limit IP Trojan Service
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root
+ExecStart=/bin/bash /usr/bin/trojan
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/vsip.service << 'EOF'
+[Unit]
+Description=Limit IP SSH Service
+After=network-online.target dropbear.service ssh.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root
+ExecStart=/bin/bash /usr/bin/tendang
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/keamanan.service << 'EOF'
+[Unit]
+Description=Keamanan Auto-Reboot Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root
+ExecStart=/bin/bash /usr/bin/keamanan
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+chmod 644 /etc/systemd/system/{limitssh,vmip,vlip,vtrip,vsip,keamanan}.service
+
+# 5. Aktifkan & Restart Seluruh Service
+systemctl daemon-reload
+for svc in limitvmess limitvless limittrojan limitssh vsip vmip vlip vtrip keamanan; do
+    systemctl enable "$svc" >/dev/null 2>&1
+    systemctl restart "$svc" >/dev/null 2>&1
+done
