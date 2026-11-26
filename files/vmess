@@ -1,0 +1,307 @@
+#!/bin/bash
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
+
+CONFIG="/etc/xray/config.json"
+DB_FILE="/etc/vmess/.vmess.db"
+QUOTA_DIR="/etc/vmess"
+USAGE_DIR="/etc/limit/vmess"
+UNLOCK_FILE="/var/lib/kyt/unlock_vmess.txt"
+CFG_LOCK="/var/lock/xray_config.lock"
+DB_LOCK="/var/lock/vmess_db.lock"
+
+XRAY_BIN=$(command -v xray 2>/dev/null || true)
+[ -z "$XRAY_BIN" ] && [ -x /usr/local/bin/xray ] && XRAY_BIN="/usr/local/bin/xray"
+[ -z "$XRAY_BIN" ] && [ -x /usr/bin/xray ] && XRAY_BIN="/usr/bin/xray"
+
+mkdir -p "$QUOTA_DIR" "$USAGE_DIR" /var/lock /var/lib/kyt
+
+html_esc() {
+    local s="$1"
+    s="${s//&/&amp;}"
+    s="${s//</&lt;}"
+    s="${s//>/&gt;}"
+    printf '%s' "$s"
+}
+
+send_log() {
+    local USER_NAME="$1"
+    local USAGE_STR="$2"
+    local LIMIT_STR="$3"
+
+    local CHATID KEY DOMAIN_PART FLAG TIMEOUT URL TEXT USER_ESC DOM_ESC
+    CHATID=$(awk '$1 == "#bot#" { sub(/\r$/, ""); print $3; exit }' "/etc/bot/.bot.db" 2>/dev/null)
+    KEY=$(awk '$1 == "#bot#" { sub(/\r$/, ""); print $2; exit }' "/etc/bot/.bot.db" 2>/dev/null)
+
+    [ -z "$CHATID" ] || [ -z "$KEY" ] && return 0
+
+    if [ -r "/etc/xray/domain" ]; then
+        DOMAIN_PART=$(tr -d '\r\n' < /etc/xray/domain | cut -d '.' -f1 | tr '[:lower:]' '[:upper:]')
+    else
+        DOMAIN_PART="VPS"
+    fi
+    [ -z "$DOMAIN_PART" ] && DOMAIN_PART="VPS"
+
+    if [[ "$DOMAIN_PART" == *"SG"* ]]; then
+        FLAG="🇸🇬"
+    else
+        FLAG="🇮🇩"
+    fi
+
+    USER_ESC=$(html_esc "$USER_NAME")
+    DOM_ESC=$(html_esc "$DOMAIN_PART")
+
+    TIMEOUT="10"
+    URL="https://api.telegram.org/bot${KEY}/sendMessage"
+    TEXT="──────────────────────
+🚫 Notifikasi Limit Quota VMESS
+──────────────────────
+<blockquote><code>SERVER ${DOM_ESC} ${FLAG}</code></blockquote>
+<code>User  :</code> <code>${USER_ESC}</code>
+<code>Usage :</code> <code>${USAGE_STR}</code>
+<code>Limit :</code> <code>${LIMIT_STR}</code>
+──────────────────────
+Limit Quota Tercapai: Chat Admin
+──────────────────────"
+
+    (
+        curl -fsS --max-time "$TIMEOUT" \
+            -d "chat_id=${CHATID}" \
+            -d "disable_web_page_preview=1" \
+            -d "parse_mode=HTML" \
+            --data-urlencode "text=${TEXT}" \
+            "$URL"
+    ) </dev/null >/dev/null 2>&1 &
+}
+
+con() {
+    local raw="$1" val
+    if ! [[ "$raw" =~ ^[0-9]+$ ]]; then
+        echo "0 B"
+        return
+    fi
+    val=$((10#$raw))
+    if (( val < 1024 )); then
+        echo "${val} B"
+    elif (( val < 1048576 )); then
+        echo "$(( (val + 1023) / 1024 )) KB"
+    elif (( val < 1073741824 )); then
+        echo "$(( (val + 1048575) / 1048576 )) MB"
+    else
+        echo "$(( (val + 1073741823) / 1073741824 )) GB"
+    fi
+}
+
+lock_quota_user() {
+    local target="$1"
+    (
+        flock -w 20 9 || exit 2
+
+        local exp lock_info is_locked uuid rand_str uuid3
+        local json_in json_out bak_cfg tmp_cfg awk_rc xray_out xray_rc
+
+        exp=$(awk -v u="$target" '{ gsub(/\r$/, "") } $1 == "###" && $2 == u { print $3; exit }' "$CONFIG" 2>/dev/null)
+        lock_info=$(awk -v u="$target" '
+            { gsub(/\r$/, "") }
+            $1 == "###" && $2 == u {
+                if (getline nextline > 0) {
+                    gsub(/\r$/, "", nextline)
+                    if (nextline ~ /LOCKED/) locked = 1
+                    if (match(nextline, /"id"[[:space:]]*:[[:space:]]*"[^"]+"/)) {
+                        s = substr(nextline, RSTART, RLENGTH)
+                        sub(/.*:[[:space:]]*"/, "", s)
+                        sub(/"$/, "", s)
+                        if (first_id == "") first_id = s
+                    }
+                }
+            }
+            END {
+                print (locked ? "1" : "0") "|" first_id
+            }
+        ' "$CONFIG" 2>/dev/null)
+
+        is_locked="${lock_info%%|*}"
+        uuid="${lock_info#*|}"
+
+        if [ -z "$exp" ] || [ -z "$uuid" ]; then
+            echo "User ${target} memiliki exp atau UUID kosong. Melewati."
+            exit 3
+        fi
+
+        if [ "$is_locked" = "1" ]; then
+            echo "Account ${target} sudah terkunci, melewati proses."
+            exit 4
+        fi
+
+        rand_str=$(head -c 32 /dev/urandom | md5sum | cut -c1-15)
+        uuid3="xrayvmess${rand_str}LOCKED"
+
+        json_in="},{\"id\": \"${uuid3}\",\"alterId\": 0,\"email\": \"${target}\""
+        json_out=",{\"id\": \"${uuid3}\",\"alterId\": 0,\"email\": \"${target}\"}"
+        bak_cfg="${CONFIG}.qvmess.bak.$$"
+        tmp_cfg="${CONFIG}.qvmess.tmp.$$"
+
+        cp -a "$CONFIG" "$bak_cfg"
+
+        awk -v u="$target" -v l1="### ${target} ${exp}" \
+            -v l_in="$json_in" -v l_out="$json_out" '
+        BEGIN { skip_next = 0; inserted = 0; last_code = "" }
+        {
+            sub(/\r$/, "")
+            line = $0
+
+            if (skip_next == 1) {
+                skip_next = 0
+                if (line ~ /^[[:space:]]*(#[[:space:]]*LOCKED[[:space:]]*)?\}?,\{/ || line ~ /"email"[[:space:]]*:/ || line ~ /LOCKED/) {
+                    next
+                }
+            }
+
+            if ($1 == "###" && $2 == u) {
+                skip_next = 1
+                next
+            }
+
+            if (line ~ /^[[:space:]]*(#[[:space:]]*LOCKED[[:space:]]*)?\}?,\{/ && line ~ /"alterId"[[:space:]]*:/ && match(line, /"email"[[:space:]]*:[[:space:]]*"[^"]+"/)) {
+                em = substr(line, RSTART, RLENGTH)
+                sub(/.*"email"[[:space:]]*:[[:space:]]*"/, "", em)
+                sub(/"$/, "", em)
+                if (em == u) next
+            }
+
+            print line
+
+            trimmed = line
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", trimmed)
+            if (trimmed == "#vmess" || trimmed == "#vmessgrpc") {
+                print l1
+                if (last_code ~ /\}[[:space:]]*$/) {
+                    print l_out
+                } else {
+                    print l_in
+                }
+                inserted++
+                next
+            }
+
+            if (line !~ /^[[:space:]]*$/ && line !~ /^[[:space:]]*#/) {
+                last_code = line
+            }
+        }
+        END {
+            if (inserted == 0) exit 2
+        }' "$CONFIG" > "$tmp_cfg"
+
+        awk_rc=$?
+        if [ "$awk_rc" -ne 0 ]; then
+            rm -f "$tmp_cfg" "$bak_cfg"
+            echo "ERROR: Anchor #vmess / #vmessgrpc tidak ditemukan untuk ${target}."
+            exit 5
+        fi
+
+        chmod --reference="$bak_cfg" "$tmp_cfg" 2>/dev/null || chmod 644 "$tmp_cfg"
+        mv "$tmp_cfg" "$CONFIG"
+
+        if [ -x "$XRAY_BIN" ]; then
+            xray_out=$("$XRAY_BIN" run -test -config "$CONFIG" 2>&1)
+            xray_rc=$?
+            if [ "$xray_rc" -ne 0 ]; then
+                mv "$bak_cfg" "$CONFIG"
+                printf '%s\n' "$xray_out" | grep -v "Warning" > /tmp/xray_test_err.log
+                echo "ERROR: Validasi Xray gagal saat lock kuota ${target}, rollback dipulihkan."
+                exit 6
+            fi
+        fi
+
+        rm -f "$bak_cfg"
+
+        # Simpan UUID asli ke .vmess.db dengan flock
+        (
+            flock -w 10 8 || exit 1
+            touch "$DB_FILE"
+            awk -v u="$target" '
+                { sub(/\r$/, "") }
+                ($1 == "###" || $1 == "#&#") && $2 == u { next }
+                { print }
+            ' "$DB_FILE" > "${DB_FILE}.tmp.$$"
+            printf '### %s %s %s\n' "$target" "$exp" "$uuid" >> "${DB_FILE}.tmp.$$"
+            mv "${DB_FILE}.tmp.$$" "$DB_FILE"
+        ) 8>"$DB_LOCK"
+
+        # Hapus jadwal auto-unlock IP agar akun habis kuota tidak terbuka otomatis
+        if [ -f "$UNLOCK_FILE" ]; then
+            awk -F'|' -v u="$target" '{ sub(/\r$/, "") } $1 != u' "$UNLOCK_FILE" > "${UNLOCK_FILE}.tmp.$$"
+            mv "${UNLOCK_FILE}.tmp.$$" "$UNLOCK_FILE"
+            chmod 600 "$UNLOCK_FILE"
+        fi
+
+        exit 0
+    ) 9>"$CFG_LOCK"
+}
+
+while true; do
+    echo "Memulai proses monitoring Quota VMESS."
+    sleep 30
+
+    if [ ! -f "$CONFIG" ]; then
+        sleep 30
+        continue
+    fi
+
+    mapfile -t data < <(awk '{ gsub(/\r$/, "") } $1 == "###" && $2 != "" { print $2 }' "$CONFIG" 2>/dev/null | sort -u)
+
+    if [ -x "$XRAY_BIN" ]; then
+        for user in "${data[@]}"; do
+            raw_stat=$("$XRAY_BIN" api stats --server=127.0.0.1:10000 -name "user>>>${user}>>>traffic>>>downlink" 2>&1)
+
+            if ! printf '%s\n' "$raw_stat" | grep -qi "failed"; then
+                downlink=$(printf '%s\n' "$raw_stat" | awk -F':' '/"value"/ { gsub(/[^0-9]/, "", $2); print $2; exit }')
+                downlink=${downlink:-0}
+
+                if [[ "$downlink" =~ ^[0-9]+$ ]] && (( 10#$downlink > 0 )); then
+                    prev=$(tr -d '[:space:]' < "${USAGE_DIR}/${user}" 2>/dev/null)
+                    [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
+                    total_bytes=$(( 10#$prev + 10#$downlink ))
+                    printf '%s\n' "$total_bytes" > "${USAGE_DIR}/${user}"
+                    "$XRAY_BIN" api stats --server=127.0.0.1:10000 -name "user>>>${user}>>>traffic>>>downlink" -reset >/dev/null 2>&1
+                elif [ ! -f "${USAGE_DIR}/${user}" ]; then
+                    printf '0\n' > "${USAGE_DIR}/${user}"
+                fi
+            fi
+        done
+    fi
+
+    NEED_RESTART=0
+    for user in "${data[@]}"; do
+        [ -f "${QUOTA_DIR}/${user}" ] || continue
+
+        checkLimit=$(tr -d '[:space:]' < "${QUOTA_DIR}/${user}" 2>/dev/null)
+        if ! [[ "$checkLimit" =~ ^[0-9]+$ ]] || (( 10#$checkLimit == 0 )); then
+            continue
+        fi
+        checkLimit=$((10#$checkLimit))
+
+        Usage=$(tr -d '[:space:]' < "${USAGE_DIR}/${user}" 2>/dev/null)
+        [[ "$Usage" =~ ^[0-9]+$ ]] || Usage=0
+        Usage=$((10#$Usage))
+
+        total=$(con "$Usage")
+        total2=$(con "$checkLimit")
+        echo "Memproses User : [Usage: $total, Limit: $total2] $user"
+
+        if (( Usage > checkLimit )); then
+            if lock_quota_user "$user"; then
+                printf '0\n' > "${USAGE_DIR}/${user}"
+                send_log "$user" "$total" "$total2"
+                echo "User ${user} melebihi batas kuota, akun dikunci & notif terkirim."
+                NEED_RESTART=1
+            fi
+        fi
+    done
+
+    if [ "$NEED_RESTART" -eq 1 ]; then
+        systemctl restart xray >/dev/null 2>&1
+    fi
+
+    echo "Siklus monitoring selesai. sleep 60 detik!"
+    sleep 60
+done

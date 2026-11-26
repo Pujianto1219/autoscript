@@ -1,0 +1,575 @@
+#!/bin/bash
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
+
+CONFIG="/etc/xray/config.json"
+DB_FILE="/etc/vmess/.vmess.db"
+LIMIT_DIR="/etc/kyt/limit/vmess/ip"
+ACCESS_LOG="/var/log/xray/access.log"
+LOCK_FILE="/var/lib/kyt/lockipvmess.txt"
+UNLOCK_FILE="/var/lib/kyt/unlock_vmess.txt"
+CFG_LOCK="/var/lock/xray_config.lock"
+DB_LOCK="/var/lock/vmess_db.lock"
+
+XRAY_BIN=$(command -v xray 2>/dev/null || true)
+[ -z "$XRAY_BIN" ] && [ -x /usr/local/bin/xray ] && XRAY_BIN="/usr/local/bin/xray"
+[ -z "$XRAY_BIN" ] && [ -x /usr/bin/xray ] && XRAY_BIN="/usr/bin/xray"
+
+mkdir -p "$LIMIT_DIR" /var/lib/kyt /etc/vmess /var/lock
+touch "$LOCK_FILE" "$UNLOCK_FILE"
+chmod 600 "$LOCK_FILE" "$UNLOCK_FILE"
+
+html_esc() {
+    local s="$1"
+    s="${s//&/&amp;}"
+    s="${s//</&lt;}"
+    s="${s//>/&gt;}"
+    printf '%s' "$s"
+}
+
+send_telegram() {
+    local TEXT="$1"
+    local CHATID KEY TIMEOUT URL
+
+    CHATID=$(awk '$1 == "#bot#" { sub(/\r$/, ""); print $3; exit }' "/etc/bot/.bot.db" 2>/dev/null)
+    KEY=$(awk '$1 == "#bot#" { sub(/\r$/, ""); print $2; exit }' "/etc/bot/.bot.db" 2>/dev/null)
+    [ -z "$CHATID" ] || [ -z "$KEY" ] && return 0
+
+    TIMEOUT="10"
+    URL="https://api.telegram.org/bot${KEY}/sendMessage"
+
+    (
+        curl -fsS --max-time "$TIMEOUT" \
+            -d "chat_id=${CHATID}" \
+            -d "disable_web_page_preview=1" \
+            -d "parse_mode=HTML" \
+            --data-urlencode "text=${TEXT}" \
+            "$URL"
+    ) </dev/null >/dev/null 2>&1 &
+}
+
+get_server_tag() {
+    local DOMAIN_PART FLAG
+    if [ -r "/etc/xray/domain" ]; then
+        DOMAIN_PART=$(tr -d '\r\n' < /etc/xray/domain | cut -d '.' -f1 | tr '[:lower:]' '[:upper:]')
+    else
+        DOMAIN_PART="VPS"
+    fi
+    [ -z "$DOMAIN_PART" ] && DOMAIN_PART="VPS"
+    if [[ "$DOMAIN_PART" == *"SG"* ]]; then
+        FLAG=""
+    else
+        FLAG=""
+    fi
+    printf '%s %s' "$(html_esc "$DOMAIN_PART")" "$FLAG"
+}
+
+send_lock_log() {
+    local AKUN_ESC LOGIN_CNT="$2" LIMIT_CNT="$3" IP_ESC FOOTER_ESC SERVER_TAG
+    AKUN_ESC=$(html_esc "$1")
+    IP_ESC=$(html_esc "$4")
+    FOOTER_ESC=$(html_esc "$5")
+    SERVER_TAG=$(get_server_tag)
+
+    send_telegram "
+ Notifikasi Multilogin VMESS
+
+<blockquote><code>SERVER ${SERVER_TAG}</code></blockquote>
+<code>User  :</code> <code>${AKUN_ESC}</code>
+<code>Login :</code> <code>${LOGIN_CNT} IP</code>
+<code>Limit :</code> <code>${LIMIT_CNT} IP</code>
+
+${IP_ESC}
+
+${FOOTER_ESC}
+"
+}
+
+send_unlock_log() {
+    local AKUN_ESC SERVER_TAG
+    AKUN_ESC=$(html_esc "$1")
+    SERVER_TAG=$(get_server_tag)
+
+    send_telegram "
+ Auto-Unlock Akun VMESS
+
+<blockquote><code>SERVER ${SERVER_TAG}</code></blockquote>
+<code>User   :</code> <code>${AKUN_ESC}</code>
+<code>Status :</code> <code>Aktif Kembali</code>
+"
+}
+
+is_account_locked() {
+    local akun="$1"
+    awk -v u="$akun" '
+        { gsub(/\r/, "") }
+        $1 == "###" && $2 == u {
+            if (getline nextline > 0) {
+                gsub(/\r/, "", nextline)
+                if (nextline ~ /LOCKED/) { found = 1; exit }
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    ' "$CONFIG" 2>/dev/null
+}
+
+apply_vmess_config() {
+    local akun="$1"
+    local exp_val="$2"
+    local id_val="$3"
+    local json_in json_out bak_cfg tmp_cfg awk_rc xray_out xray_rc
+
+    json_in="},{\"id\": \"${id_val}\",\"alterId\": 0,\"email\": \"${akun}\""
+    json_out=",{\"id\": \"${id_val}\",\"alterId\": 0,\"email\": \"${akun}\"}"
+    bak_cfg="${CONFIG}.vmip.bak.$$"
+    tmp_cfg="${CONFIG}.vmip.tmp.$$"
+
+    cp -a "$CONFIG" "$bak_cfg"
+
+    awk -v u="$akun" -v l1="### ${akun} ${exp_val}" \
+        -v l_in="$json_in" -v l_out="$json_out" '
+    BEGIN { skip_next = 0; inserted = 0; last_code = "" }
+    {
+        sub(/\r$/, "")
+        line = $0
+
+        if (skip_next == 1) {
+            skip_next = 0
+            if (line ~ /^[[:space:]]*(#[[:space:]]*LOCKED[[:space:]]*)?\}?,\{/ || line ~ /"email"[[:space:]]*:/ || line ~ /LOCKED/) {
+                next
+            }
+        }
+
+        if ($1 == "###" && $2 == u) {
+            skip_next = 1
+            next
+        }
+
+        if (line ~ /^[[:space:]]*(#[[:space:]]*LOCKED[[:space:]]*)?\}?,\{/ && line ~ /"alterId"[[:space:]]*:/ && match(line, /"email"[[:space:]]*:[[:space:]]*"[^"]+"/)) {
+            em = substr(line, RSTART, RLENGTH)
+            sub(/.*"email"[[:space:]]*:[[:space:]]*"/, "", em)
+            sub(/"$/, "", em)
+            if (em == u) next
+        }
+
+        print line
+
+        trimmed = line
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", trimmed)
+        if (trimmed == "#vmess" || trimmed == "#vmessgrpc") {
+            print l1
+            if (last_code ~ /\}[[:space:]]*$/) {
+                print l_out
+            } else {
+                print l_in
+            }
+            inserted++
+            next
+        }
+
+        if (line !~ /^[[:space:]]*$/ && line !~ /^[[:space:]]*#/) {
+            last_code = line
+        }
+    }
+    END {
+        if (inserted == 0) exit 2
+    }' "$CONFIG" > "$tmp_cfg"
+
+    awk_rc=$?
+    if [ "$awk_rc" -ne 0 ]; then
+        rm -f "$tmp_cfg" "$bak_cfg"
+        echo "ERROR: Anchor #vmess / #vmessgrpc tidak ditemukan untuk ${akun}."
+        return 1
+    fi
+
+    chmod --reference="$bak_cfg" "$tmp_cfg" 2>/dev/null || chmod 644 "$tmp_cfg"
+    mv "$tmp_cfg" "$CONFIG"
+
+    if [ -x "$XRAY_BIN" ]; then
+        xray_out=$("$XRAY_BIN" run -test -config "$CONFIG" 2>&1)
+        xray_rc=$?
+        if [ "$xray_rc" -ne 0 ]; then
+            mv "$bak_cfg" "$CONFIG"
+            printf '%s\n' "$xray_out" | grep -v "Warning" > /tmp/xray_test_err.log
+            echo "ERROR: config.json tidak valid setelah edit ${akun}! Backup dipulihkan."
+            return 1
+        fi
+    fi
+
+    rm -f "$bak_cfg"
+    return 0
+}
+
+save_vmess_db() {
+    local akun="$1"
+    local exp_val="$2"
+    local id_val="$3"
+    (
+        flock -w 10 8 || exit 1
+        touch "$DB_FILE"
+        awk -v u="$akun" '
+            { sub(/\r$/, "") }
+            ($1 == "###" || $1 == "#&#") && $2 == u { next }
+            { print }
+        ' "$DB_FILE" > "${DB_FILE}.tmp.$$"
+        printf '### %s %s %s\n' "$akun" "$exp_val" "$id_val" >> "${DB_FILE}.tmp.$$"
+        mv "${DB_FILE}.tmp.$$" "$DB_FILE"
+    ) 8>"$DB_LOCK"
+}
+
+lock_vmess_account() {
+    local akun="$1"
+    local exp lock_info is_locked uuid rand_str uuid3 rc=0
+
+    LAST_LOCKED_EXP=""
+    LAST_LOCKED_UUID=""
+
+    exec 9>"$CFG_LOCK"
+    if ! flock -w 20 9; then
+        exec 9>&-
+        return 1
+    fi
+
+    exp=$(awk -v u="$akun" '{ gsub(/\r$/, "") } $1 == "###" && $2 == u { print $3; exit }' "$CONFIG" 2>/dev/null)
+    lock_info=$(awk -v u="$akun" '
+        { gsub(/\r$/, "") }
+        $1 == "###" && $2 == u {
+            if (getline nextline > 0) {
+                gsub(/\r/, "", nextline)
+                if (nextline ~ /LOCKED/) locked = 1
+                if (match(nextline, /"id"[[:space:]]*:[[:space:]]*"[^"]+"/)) {
+                    s = substr(nextline, RSTART, RLENGTH)
+                    sub(/.*:[[:space:]]*"/, "", s)
+                    sub(/"$/, "", s)
+                    if (first_id == "") first_id = s
+                }
+            }
+        }
+        END {
+            print (locked ? "1" : "0") "|" first_id
+        }
+    ' "$CONFIG" 2>/dev/null)
+
+    is_locked="${lock_info%%|*}"
+    uuid="${lock_info#*|}"
+
+    if [ -z "$exp" ] || [ -z "$uuid" ]; then
+        echo "Exp atau UUID untuk ${akun} tidak ditemukan, melewati lock."
+        rc=1
+    elif [ "$is_locked" = "1" ]; then
+        echo "Account ${akun} sudah terkunci, melewati proses."
+        rc=2
+    else
+        rand_str=$(head -c 32 /dev/urandom | md5sum | cut -c1-15)
+        uuid3="xrayvmess${rand_str}LOCKED"
+
+        if apply_vmess_config "$akun" "$exp" "$uuid3"; then
+            save_vmess_db "$akun" "$exp" "$uuid"
+            LAST_LOCKED_EXP="$exp"
+            LAST_LOCKED_UUID="$uuid"
+            rc=0
+        else
+            rc=1
+        fi
+    fi
+
+    flock -u 9
+    exec 9>&-
+    return "$rc"
+}
+
+unlock_vmess_account() {
+    local akun="$1"
+    local saved_exp="$2"
+    local saved_uuid="$3"
+    local exp_cfg db_uuid valid_saved final_uuid rc=0
+
+    exec 9>"$CFG_LOCK"
+    if ! flock -w 20 9; then
+        exec 9>&-
+        return 1
+    fi
+
+    if ! is_account_locked "$akun"; then
+        rc=2
+    else
+        exp_cfg=$(awk -v u="$akun" '{ gsub(/\r$/, "") } $1 == "###" && $2 == u { print $3; exit }' "$CONFIG" 2>/dev/null)
+        exp_cfg="${exp_cfg:-$saved_exp}"
+
+        db_uuid=$(awk -v u="$akun" '
+            { gsub(/\r$/, "") }
+            ($1 == "###" || $1 == "#&#") && $2 == u && $4 != "" && $4 !~ /LOCKED/ && $4 !~ /^xray(vmess|vless|trojan)/ {
+                val = $4
+            }
+            END { if (val != "") print val }
+        ' "$DB_FILE" 2>/dev/null)
+
+        valid_saved=""
+        if [ -n "$saved_uuid" ] && [[ "$saved_uuid" != *"LOCKED"* ]] && ! [[ "$saved_uuid" =~ ^xray(vmess|vless|trojan) ]]; then
+            valid_saved="$saved_uuid"
+        fi
+
+        final_uuid="${db_uuid:-$valid_saved}"
+
+        if [ -z "$exp_cfg" ] || [ -z "$final_uuid" ]; then
+            echo "Gagal auto-unlock ${akun}: exp atau UUID asli kosong."
+            rc=1
+        elif apply_vmess_config "$akun" "$exp_cfg" "$final_uuid"; then
+            save_vmess_db "$akun" "$exp_cfg" "$final_uuid"
+            rc=0
+        else
+            rc=1
+        fi
+    fi
+
+    flock -u 9
+    exec 9>&-
+    return "$rc"
+}
+
+process_auto_unlock() {
+    [ ! -s "$UNLOCK_FILE" ] && return 0
+
+    local now tmp_file u unlock_ts s_exp s_uuid unlocked_any unlocked_users rc
+    now=$(date +%s)
+    tmp_file="${UNLOCK_FILE}.tmp.$$"
+    unlocked_any=0
+    unlocked_users=()
+    : > "$tmp_file"
+
+    while IFS='|' read -r u unlock_ts s_exp s_uuid; do
+        u=$(printf '%s' "$u" | tr -d '\r')
+        unlock_ts=$(printf '%s' "$unlock_ts" | tr -d '[:space:]')
+        s_exp=$(printf '%s' "$s_exp" | tr -d '\r')
+        s_uuid=$(printf '%s' "$s_uuid" | tr -d '\r')
+        [ -z "$u" ] && continue
+
+        if [[ "$unlock_ts" =~ ^[0-9]+$ ]] && (( now >= 10#$unlock_ts )); then
+            unlock_vmess_account "$u" "$s_exp" "$s_uuid"
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+                echo "Auto-unlock VMess berhasil untuk ${u}."
+                unlocked_any=1
+                unlocked_users+=("$u")
+            elif [ "$rc" -eq 2 ]; then
+                echo "Akun ${u} sudah aktif (dibuka manual/terhapus), jadwal auto-unlock dihapus."
+            else
+                printf '%s|%s|%s|%s\n' "$u" "$unlock_ts" "$s_exp" "$s_uuid" >> "$tmp_file"
+            fi
+        else
+            printf '%s|%s|%s|%s\n' "$u" "$unlock_ts" "$s_exp" "$s_uuid" >> "$tmp_file"
+        fi
+    done < "$UNLOCK_FILE"
+
+    mv "$tmp_file" "$UNLOCK_FILE"
+    chmod 600 "$UNLOCK_FILE"
+
+    if [ "$unlocked_any" -eq 1 ]; then
+        systemctl restart xray >/dev/null 2>&1
+        for u in "${unlocked_users[@]}"; do
+            send_unlock_log "$u"
+        done
+    fi
+}
+
+schedule_unlock() {
+    local target="$1"
+    local duration_sec="$2"
+    local orig_exp="$3"
+    local orig_uuid="$4"
+    local unlock_ts=$(( $(date +%s) + duration_sec ))
+
+    awk -F'|' -v u="$target" '{ sub(/\r$/, "") } $1 != u' "$UNLOCK_FILE" > "${UNLOCK_FILE}.tmp.$$"
+    printf '%s|%s|%s|%s\n' "$target" "$unlock_ts" "$orig_exp" "$orig_uuid" >> "${UNLOCK_FILE}.tmp.$$"
+    mv "${UNLOCK_FILE}.tmp.$$" "$UNLOCK_FILE"
+    chmod 600 "$UNLOCK_FILE"
+}
+
+clear_lock_count() {
+    local target="$1"
+    grep -Fxv "$target" "$LOCK_FILE" > "${LOCK_FILE}.tmp.$$" 2>/dev/null || true
+    mv "${LOCK_FILE}.tmp.$$" "$LOCK_FILE"
+    chmod 600 "$LOCK_FILE"
+}
+
+scan_recent_ips() {
+    local window_sec="$1"
+    local cutoff
+    cutoff=$(date -d "${window_sec} seconds ago" +"%Y/%m/%d %H:%M:%S")
+
+    [ ! -r "$ACCESS_LOG" ] && return 0
+
+    tail -n 3000 "$ACCESS_LOG" 2>/dev/null | awk -v cutoff="$cutoff" '
+        { sub(/\r$/, "") }
+        /accepted/ && /email:/ {
+            ts = $1 " " $2
+            gsub(/-/, "/", ts)
+            sub(/\..*/, "", ts)
+            if (ts < cutoff) next
+
+            email = ""
+            for (i = 1; i <= NF; i++) {
+                if ($i == "email:" && i < NF) {
+                    email = $(i+1)
+                    break
+                }
+            }
+            if (email == "") next
+
+            full_ip = ""
+            pref = ""
+            for (i = 1; i <= NF; i++) {
+                if ($i == "from" && i < NF) {
+                    raw = $(i+1)
+                    sub(/^(tcp|udp):/, "", raw)
+                    if (raw ~ /^\[/) {
+                        sub(/^\[/, "", raw)
+                        sub(/\].*/, "", raw)
+                        full_ip = raw
+                        pref = raw
+                    } else {
+                        sub(/:.*/, "", raw)
+                        full_ip = raw
+                        n = split(raw, oct, ".")
+                        if (n == 4) pref = oct[1] "." oct[2]
+                        else pref = raw
+                    }
+                    break
+                }
+            }
+            if (pref == "") next
+
+            key = email SUBSEP pref
+            if (!(key in seen)) {
+                seen[key] = 1
+                count[email]++
+                if (ips[email] == "") ips[email] = full_ip
+                else ips[email] = ips[email] "," full_ip
+            }
+        }
+        END {
+            for (u in count) {
+                print u "|" count[u] "|" ips[u]
+            }
+        }
+    '
+}
+
+format_ip_list() {
+    printf '%s\n' "$1" | tr ',' '\n' | awk 'NF { print NR ". " $0 }'
+}
+
+while true; do
+    if [ ! -f "$CONFIG" ]; then
+        sleep 15
+        continue
+    fi
+
+    # 1. Buka akun yang masa lock-nya sudah berakhir
+    process_auto_unlock
+
+    echo "Memulai proses monitoring Limit IP VMESS."
+    mapfile -t data < <(awk '{ gsub(/\r$/, "") } $1 == "###" && $2 != "" { print $2 }' "$CONFIG" 2>/dev/null | sort -u)
+
+    # 2. Tahap 1: Scan IP aktif 60 detik terakhir
+    unset pass1_count user_limits
+    declare -A pass1_count
+    declare -A user_limits
+    suspects=()
+
+    while IFS='|' read -r u cnt _; do
+        [ -z "$u" ] && continue
+        pass1_count["$u"]="$cnt"
+    done < <(scan_recent_ips 60)
+
+    for akun in "${data[@]}"; do
+        jum1="${pass1_count[$akun]:-0}"
+        (( 10#$jum1 == 0 )) && continue
+
+        [ -f "${LIMIT_DIR}/${akun}" ] || continue
+        iplimit=$(tr -d '[:space:]' < "${LIMIT_DIR}/${akun}" 2>/dev/null)
+        if ! [[ "$iplimit" =~ ^[0-9]+$ ]] || (( 10#$iplimit <= 0 )); then
+            continue
+        fi
+        iplimit=$((10#$iplimit))
+
+        echo "Memproses User : [Login: $jum1 IP, Limit: $iplimit IP] $akun"
+        if (( 10#$jum1 > iplimit )); then
+            suspects+=("$akun")
+            user_limits["$akun"]="$iplimit"
+        fi
+    done
+
+    # 3. Tahap 2: Validasi ulang 45 detik jika ada indikasi multilogin
+    NEED_RESTART=0
+    if [ "${#suspects[@]}" -gt 0 ]; then
+        echo "Terdeteksi ${#suspects[@]} indikasi multilogin VMESS, validasi ulang 45 detik..."
+        for _ in 1 2 3; do
+            sleep 15
+            process_auto_unlock
+        done
+
+        unset pass2_count pass2_ips
+        declare -A pass2_count
+        declare -A pass2_ips
+
+        while IFS='|' read -r u cnt ip_csv; do
+            [ -z "$u" ] && continue
+            pass2_count["$u"]="$cnt"
+            pass2_ips["$u"]="$ip_csv"
+        done < <(scan_recent_ips 45)
+
+        for akun in "${suspects[@]}"; do
+            jum2="${pass2_count[$akun]:-0}"
+            iplimit="${user_limits[$akun]}"
+
+            if (( 10#$jum2 > iplimit )); then
+                if is_account_locked "$akun"; then
+                    echo "Akun ${akun} sudah berstatus LOCKED, melewati."
+                    continue
+                fi
+
+                echo "Mulog ${akun} valid, Login [${jum2} IP / Limit ${iplimit} IP]"
+                ip_formatted=$(format_ip_list "${pass2_ips[$akun]}")
+                prev_viol=$(grep -Fxc "$akun" "$LOCK_FILE" 2>/dev/null || echo 0)
+                viol_count=$(( 10#$prev_viol + 1 ))
+
+                if lock_vmess_account "$akun"; then
+                    if (( viol_count == 1 )); then
+                        printf '%s\n' "$akun" >> "$LOCK_FILE"
+                        echo "Locked user ${akun} selama 5 menit (1X Multilogin)"
+                        schedule_unlock "$akun" 300 "$LAST_LOCKED_EXP" "$LAST_LOCKED_UUID"
+                        send_lock_log "$akun" "$jum2" "$iplimit" "$ip_formatted" "Notif 1X Multilogin: Lock 5 Menit"
+                    elif (( viol_count == 2 )); then
+                        printf '%s\n' "$akun" >> "$LOCK_FILE"
+                        echo "Locked user ${akun} selama 10 menit (2X Multilogin)"
+                        schedule_unlock "$akun" 600 "$LAST_LOCKED_EXP" "$LAST_LOCKED_UUID"
+                        send_lock_log "$akun" "$jum2" "$iplimit" "$ip_formatted" "Notif 2X Multilogin: Lock 10 Menit"
+                    elif (( viol_count == 3 )); then
+                        printf '%s\n' "$akun" >> "$LOCK_FILE"
+                        echo "Locked user ${akun} selama 20 menit (3X Multilogin)"
+                        schedule_unlock "$akun" 1200 "$LAST_LOCKED_EXP" "$LAST_LOCKED_UUID"
+                        send_lock_log "$akun" "$jum2" "$iplimit" "$ip_formatted" "Notif 3X Multilogin: Lock 20 Menit"
+                    else
+                        echo "Locked user ${akun} PERMANEN (4X Multilogin)"
+                        send_lock_log "$akun" "$jum2" "$iplimit" "$ip_formatted" "Notif 4X Multilogin: Locked Permanen!"
+                        clear_lock_count "$akun"
+                    fi
+                    NEED_RESTART=1
+                fi
+            else
+                echo "Mulog ${akun} tidak valid pada cek ke-2, Login [${jum2} IP]"
+            fi
+        done
+    fi
+
+    if [ "$NEED_RESTART" -eq 1 ]; then
+        echo "Terjadi penguncian multilogin, restart layanan xray."
+        systemctl restart xray >/dev/null 2>&1
+    fi
+
+    echo "Siklus monitoring VMESS selesai. sleep 60 detik!"
+    for _ in 1 2 3 4; do
+        sleep 15
+        process_auto_unlock
+    done
+done
